@@ -1,0 +1,6 @@
+Run the command in terminal 
+
+pip install  flask_cors
+pip install  flask
+pip install google.generativeai
+pip install serpapi

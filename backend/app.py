@@ -4,13 +4,51 @@ import json
 import re
 import google.generativeai as genai
 from serpapi.google_search import GoogleSearch
+from mongoengine import Document, StringField, IntField, DateTimeField, ListField, EmbeddedDocumentField
+from mongoengine import connect
+
+
+
+# Corrected URI with percent-encoded password
+uri = "mongodb+srv://aiautomationhig:x6MJpyruWEaiUU3R@companysearchfinder.tw2yfrm.mongodb.net/?retryWrites=true&w=majority&appName=CompanySearchFinder"
+
+
+
+try:
+    connect('company_search_finder', host=uri)
+    print("MongoDB connection successful")
+except Exception as e:
+    print("MongoDB connection failed:", e)
+
+
+# Define schemas using MongoEngine
+class User(Document):
+    company_name= StringField(unique=True, required=True, max_length=200) # Company name
+    founded_year = IntField() # Year the company was founded
+    headquarters_location = StringField() # Location of the company's headquarters
+    branch_locations = ListField(StringField()) # Locations of the company's branches
+    core_business_or_main_focus = StringField() # Main focus or core business of the company
+    pros_of_working_there = ListField(StringField()) # Pros of working at the company
+    cons_of_working_there = ListField(StringField()) # Cons of working at the company
+    company_culture_summary = StringField() # Summary of the company culture
+    notable_achievements_or_awards = StringField() # Notable achievements or awards of the company
+    fresher_friendly_rating_percent = IntField() # Rating for freshers (0-100)
+    created_at = DateTimeField() # Timestamp of when the document was created
+    
+   
+
+ 
+
+
+
 
 app = Flask(__name__)
 CORS(app)
 
 # Replace with your actual API keys
-GEMINI_API_KEY = "AIzaSyDbLI6N8BcfYwN30uamRjKa2tQ1E525jOQ"                          # API key for Gemini
+GEMINI_API_KEY = "AIzaSyBSh5HA6EVQnzJD_oeEAxibxO4XtgC7568"                          # API key for Gemini
 SERP_API_KEY = "271f0d1ae537d6ef67f425980ff3fd4f14fb2cca064f2b2b7329266508ec8d57"   # API key for SerpAPI
+
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-pro-latest")
@@ -104,27 +142,75 @@ def extract_json_from_text(text):
         print("JSON extraction failed:", e)
     return None
 
+
+
 @app.route("/company", methods=["POST"])
 def company_lookup():
     data = request.get_json()
-    company_name = data.get("company_name", "")
+    company_name = data.get("company_name", "").strip()
+    company_name=company_name.upper()
+
+    # 🚫 No company name provided
     if not company_name:
         return jsonify({"error": "No company name provided."}), 400
 
-    gemini_output = get_company_info_from_gemini(company_name)
+    try:
+        # ✅ Check if company already exists in DB
+        existing_company = User.objects(company_name=company_name).first()
+        if existing_company:
+            company_data = {
+                "company_name": existing_company.company_name,
+                "founded_year": existing_company.founded_year,
+                "headquarters_location": existing_company.headquarters_location,
+                "branch_locations": existing_company.branch_locations,
+                "core_business_or_main_focus": existing_company.core_business_or_main_focus,
+                "pros_of_working_there": existing_company.pros_of_working_there,
+                "cons_of_working_there": existing_company.cons_of_working_there,
+                "company_culture_summary": existing_company.company_culture_summary,
+                "notable_achievements_or_awards": existing_company.notable_achievements_or_awards,
+                "fresher_friendly_rating_percent": existing_company.fresher_friendly_rating_percent,
+            }
+            return jsonify({"source": "DB", "data": company_data}), 200
+    except Exception as e:
+        print("MongoDB query failed:", e)
 
+    # 🔮 Try Gemini API directly
+    gemini_output = get_company_info_from_gemini(company_name)
     if gemini_output and is_summary_trustworthy(gemini_output):
         parsed = extract_json_from_text(gemini_output)
         if parsed:
-            return jsonify({"source": "Gemini", "data": parsed})
+            try:
+    # 💡 Ensure lists are actually lists
+                parsed['branch_locations'] = parsed.get('branch_locations', [])
+                if isinstance(parsed['branch_locations'], str):
+                    parsed['branch_locations'] = [parsed['branch_locations']]
 
-    search_results = search_google(company_name)
-    summarized_output = summarize_with_gemini_from_search(search_results, company_name)
-    parsed = extract_json_from_text(summarized_output)
-    if parsed:
-        return jsonify({"source": "Search + Gemini", "data": parsed})
+                parsed['pros_of_working_there'] = parsed.get('pros_of_working_there', [])
+                if isinstance(parsed['pros_of_working_there'], str):
+                    parsed['pros_of_working_there'] = [parsed['pros_of_working_there']]
 
-    return jsonify({"error": "Failed to retrieve valid information."}), 500
+                parsed['cons_of_working_there'] = parsed.get('cons_of_working_there', [])
+                if isinstance(parsed['cons_of_working_there'], str):
+                    parsed['cons_of_working_there'] = [parsed['cons_of_working_there']]
+
+                user = User(
+                    company_name=parsed['company_name'].upper(),
+                    founded_year=parsed['founded_year'],
+                    headquarters_location=parsed['headquarters_location'],
+                    branch_locations=parsed['branch_locations'],
+                    core_business_or_main_focus=parsed['core_business_or_main_focus'],
+                    pros_of_working_there=parsed['pros_of_working_there'],
+                    cons_of_working_there=parsed['cons_of_working_there'],
+                    company_culture_summary=parsed['company_culture_summary'],
+                    notable_achievements_or_awards=str(parsed['notable_achievements_or_awards']),
+                    fresher_friendly_rating_percent=parsed['fresher_friendly_rating_percent']
+                )
+                user.save()
+                return jsonify({"source": "Gemini", "data": parsed}), 200
+            except Exception as e:
+                print("MongoDB save failed:", e)
+                return jsonify({"error": "Failed to save Gemini data"}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True)
